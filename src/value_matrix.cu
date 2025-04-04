@@ -63,7 +63,7 @@ Matrix::Matrix(Matrix* other) {
   this->visited = other->visited;
 }
 
-void Matrix::transferToGPU() {
+void Matrix::transferToDevice() {
   if (isOnGPU) {
     return;
   }
@@ -113,6 +113,31 @@ void Matrix::transferToGPU() {
 
   // Set the GPU flag
   isOnGPU = true;
+}
+
+void Matrix::transferToHost() {
+  if (!isOnGPU) {
+    return;
+  }
+  
+  size_t sizeofdata = sizeof(_data[0]);
+  size_t sizeofgradient = sizeof(_gradient[0]);
+
+  double* _data_hptr = new double[n];
+  double* _gradient_hptr = new double[n];
+
+  // TODO: Implement this
+  cudaError_t cudareturn;
+
+  cudaMemcpy(_data, _data_hptr, sizeofdata * n, cudaMemcpyDeviceToHost);
+  cudaMemcpy(_gradient, _gradient_hptr, sizeofgradient * n, cudaMemcpyDeviceToHost);
+
+  cudaFree(_data);
+  cudaFree(_gradient);
+
+  _data = _data_hptr;
+  _gradient = _gradient_hptr;
+  isOnGPU = false;
 }
 
 
@@ -180,52 +205,51 @@ Matrix* Matrix::softmax() {
   
   // Apply gradient row-wise
   // Jacobian: J = diag(S_i) - S_i^T * S_i => N x N matrix for each row
-  result->_backward = [this, result]() {
-  
-    size_t N = result->n_cols; // Number of classes
-    size_t B = result->n_rows;
+ // result->_backward = [this, result]() {
+ // 
+ //   size_t N = result->n_cols; // Number of classes
+ //   size_t B = result->n_rows;
 
-    // Temporary storage for Jacobian (N x N)
-    double* J = new double[N * N];
+ //   // Temporary storage for Jacobian (N x N)
+ //   double* J = new double[N * N];
 
-    for (size_t i = 0; i < B; i++) {
-        double* s = &result->_data[i * N]; // Softmax output for i-th sample
-        double* dL_dS = &result->_gradient[i * N]; // Incoming grad for i-th sample
-        double* dL_dX = &this->_gradient[i * N]; // Output grad for i-th sample
+ //   for (size_t i = 0; i < B; i++) {
+ //       double* s = &result->_data[i * N]; // Softmax output for i-th sample
+ //       double* dL_dS = &result->_gradient[i * N]; // Incoming grad for i-th sample
+ //       double* dL_dX = &this->_gradient[i * N]; // Output grad for i-th sample
 
-        // Compute J = diag(s) - s^T s
-        // 1. J = -s^T s (outer product)
-        cblas_dger(
-            CblasRowMajor,
-            N, N,               // Dimensions
-            -1.0,               // Scaling factor
-            s, 1,               // s (row vector)
-            s, 1,               // s (row vector)
-            J, N                // Output J (C x C)
-        );
+ //       // Compute J = diag(s) - s^T s
+ //       // 1. J = -s^T s (outer product)
+ //       cblas_dger(
+ //           CblasRowMajor,
+ //           N, N,               // Dimensions
+ //           -1.0,               // Scaling factor
+ //           s, 1,               // s (row vector)
+ //           s, 1,               // s (row vector)
+ //           J, N                // Output J (C x C)
+ //       );
 
-        // 2. J += diag(s)
-        for (size_t j = 0; j < N; j++) {
-            J[j * N + j] += s[j];
-        }
+ //       // 2. J += diag(s)
+ //       for (size_t j = 0; j < N; j++) {
+ //           J[j * N + j] += s[j];
+ //       }
 
-        // Compute dL_dX = dL_dS @ J (since J is symmetric)
-        // result grad is then a 1 x N for each row to update
-        cblas_dsymv(
-            CblasRowMajor,
-            CblasUpper,         // Use upper triangle (J is symmetric)
-            N,                 // Dimension
-            1.0,               // Scaling factor
-            J, N,              // Jacobian matrix
-            dL_dS, 1,          // Incoming gradient (row vector)
-            1.0,               // Accumulate into dL_dX
-            dL_dX, 1           // Output gradient
-        );
+ //       // Compute dL_dX = dL_dS @ J (since J is symmetric)
+ //       // result grad is then a 1 x N for each row to update
+ //       cblas_dsymv(
+ //           CblasRowMajor,
+ //           CblasUpper,         // Use upper triangle (J is symmetric)
+ //           N,                 // Dimension
+ //           1.0,               // Scaling factor
+ //           J, N,              // Jacobian matrix
+ //           dL_dS, 1,          // Incoming gradient (row vector)
+ //           1.0,               // Accumulate into dL_dX
+ //           dL_dX, 1           // Output gradient
+ //       );
 
-    }
+ //   }
 
-    delete[] J;
-};
+ //   delete[] J;
   return result;
 }
 
@@ -298,14 +322,14 @@ Matrix* Matrix::relu() {
   result->childs.insert(this);
   result->op = "relu";
   // Note that relu() is an elementwise function (hadamard) so the derivative is also elementwise
-  result->_backward = [result, this] () {
-    #pragma omp parallel for
-    for (size_t i = 0; i < result->n; i++) {
-      if(result->_data[i] > 0){
-        this->_gradient[i] += result->_gradient[i];
-      }
-    }
-  };
+ // result->_backward = [result, this] () {
+ //   #pragma omp parallel for
+ //   for (size_t i = 0; i < result->n; i++) {
+ //     if(result->_data[i] > 0){
+ //       this->_gradient[i] += result->_gradient[i];
+ //     }
+ //   }
+ // };
 
   return result;
 }
@@ -323,14 +347,14 @@ Matrix* Matrix::sigmoid() {
   result->childs.insert(this);
   result->op = "sigmoid";
   
-  // Elementwise gradient
-  result->_backward = [this, result] () {
-    #pragma omp parallel for
-    for (size_t i = 0; i < result->n; i++) {
-        double sigmoid_val = result->_data[i];  
-        this->_gradient[i] += result->_gradient[i] * sigmoid_val * (1 - sigmoid_val);
-    }
-  };
+ // // Elementwise gradient
+ // result->_backward = [this, result] () {
+ //   #pragma omp parallel for
+ //   for (size_t i = 0; i < result->n; i++) {
+ //       double sigmoid_val = result->_data[i];  
+ //       this->_gradient[i] += result->_gradient[i] * sigmoid_val * (1 - sigmoid_val);
+ //   }
+ // };
 
   return result;
 }
@@ -362,24 +386,24 @@ Matrix* Matrix::operator+ (Matrix* other){
 //        other->_gradient[i] += result->_gradient[i];
 //    }
 //};
-  result->_backward = [this, other, result] () {
+ // result->_backward = [this, other, result] () {
 
-    // Gradient w.r.t this
-    cblas_daxpy(n_rows * n_cols,
-                1.0,
-                result->_gradient,
-                1,
-                this->_gradient,
-                1);
+ //   // Gradient w.r.t this
+ //   cblas_daxpy(n_rows * n_cols,
+ //               1.0,
+ //               result->_gradient,
+ //               1,
+ //               this->_gradient,
+ //               1);
 
-    // Gradient w.r.t other
-    cblas_daxpy(n_rows * n_cols,
-                1.0,
-                result->_gradient,
-                1,
-                other->_gradient,
-                1);
-  };
+ //   // Gradient w.r.t other
+ //   cblas_daxpy(n_rows * n_cols,
+ //               1.0,
+ //               result->_gradient,
+ //               1,
+ //               other->_gradient,
+ //               1);
+ // };
 
   return result;
 };
@@ -407,26 +431,26 @@ Matrix* Matrix::operator- (Matrix* other){
   result->childs.insert(other);
   result->op = "-";
 
-  result->_backward = [this, other, result] () {
-    // Note: Addtition and Subtraction just pass the gradient to the childs
-    // In order to accumulate gradients we need to sum the incoming gradients
-    // This is why I use daxpy
+ // result->_backward = [this, other, result] () {
+ //   // Note: Addtition and Subtraction just pass the gradient to the childs
+ //   // In order to accumulate gradients we need to sum the incoming gradients
+ //   // This is why I use daxpy
 
-    // Gradient w.r.t this
-    cblas_daxpy(n_rows * n_cols,
-                1.0,
-                result->_gradient,
-                1,
-                this->_gradient,
-                1);
-    // Gradient w.r.t other
-    cblas_daxpy(n_rows * n_cols,
-                -1.0,// This is -(result->_gradient)
-                result->_gradient,           
-                1,
-                other->_gradient,
-                1);
-  };
+ //   // Gradient w.r.t this
+ //   cblas_daxpy(n_rows * n_cols,
+ //               1.0,
+ //               result->_gradient,
+ //               1,
+ //               this->_gradient,
+ //               1);
+ //   // Gradient w.r.t other
+ //   cblas_daxpy(n_rows * n_cols,
+ //               -1.0,// This is -(result->_gradient)
+ //               result->_gradient,           
+ //               1,
+ //               other->_gradient,
+ //               1);
+ // };
 
   return result;
 };
@@ -461,7 +485,7 @@ Matrix* Matrix::operator* (Matrix* other){
   result->op = "*";
 
 
-result->_backward = [this, other, result]() {
+//result->_backward = [this, other, result]() {
   // Gradient for 'this' (X): dL/dX = dL/dZ * W^T
   // Dimensions:
   // - X (this): m x k
@@ -507,24 +531,24 @@ result->_backward = [this, other, result]() {
 //  }
 
 
-  // For gradient w.r.t this (X): dL/dX = dL/dZ * W^T
-  cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
-              this->n_rows, this->n_cols, result->n_cols,
-              1.0,
-              result->_gradient, result->n_cols,
-              other->_data, other->n_cols,
-              1.0,
-              this->_gradient, this->n_cols);
-  
-  // For gradient w.r.t other (W): dL/dW = X^T * dL/dZ
-  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
-              other->n_rows, other->n_cols, this->n_rows,
-              1.0,
-              this->_data, this->n_cols,
-              result->_gradient, result->n_cols,
-              1.0,
-              other->_gradient, other->n_cols);
-};
+//  // For gradient w.r.t this (X): dL/dX = dL/dZ * W^T
+//  cblas_dgemm(CblasRowMajor, CblasNoTrans, CblasTrans,
+//              this->n_rows, this->n_cols, result->n_cols,
+//              1.0,
+//              result->_gradient, result->n_cols,
+//              other->_data, other->n_cols,
+//              1.0,
+//              this->_gradient, this->n_cols);
+//  
+//  // For gradient w.r.t other (W): dL/dW = X^T * dL/dZ
+//  cblas_dgemm(CblasRowMajor, CblasTrans, CblasNoTrans,
+//              other->n_rows, other->n_cols, this->n_rows,
+//              1.0,
+//              this->_data, this->n_cols,
+//              result->_gradient, result->n_cols,
+//              1.0,
+//              other->_gradient, other->n_cols);
+//};
 
   return result;
 };
@@ -540,20 +564,20 @@ Matrix* Matrix::square() {
   result->childs.insert(this);
   result->op = "square";
 
-  result->_backward = [result, this] () {   
-    //)(d(A^2) / dA = 2 * A) => out_grad * (scalar * this->_data)
-    // Note that square() is an element-wise operation so the gradient applies also elementwise (hadamard product)
-    double* copy_of_data = new double[result->n];
-    cblas_dcopy(result->n, this->_data, 1, copy_of_data, 1);
-    
-    // multiply everything by 2
-    cblas_dscal(this->n, 2.0, copy_of_data, 1);
-    
-    for (size_t i = 0; i < this->n; i++) {
-      this->_gradient[i] += result->_gradient[i] * copy_of_data[i];
-    }
-    delete[] copy_of_data;
-  };
+//  result->_backward = [result, this] () {   
+//    //)(d(A^2) / dA = 2 * A) => out_grad * (scalar * this->_data)
+//    // Note that square() is an element-wise operation so the gradient applies also elementwise (hadamard product)
+//    double* copy_of_data = new double[result->n];
+//    cblas_dcopy(result->n, this->_data, 1, copy_of_data, 1);
+//    
+//    // multiply everything by 2
+//    cblas_dscal(this->n, 2.0, copy_of_data, 1);
+//    
+//    for (size_t i = 0; i < this->n; i++) {
+//      this->_gradient[i] += result->_gradient[i] * copy_of_data[i];
+//    }
+//    delete[] copy_of_data;
+//  };
    
   return result;
 }
@@ -573,21 +597,20 @@ Matrix* Matrix::add_bias(Matrix* other) {
   result->childs.insert(this);
   result->childs.insert(other);
     
-  result->_backward = [this, other, result] () {
-    cblas_daxpy(n, 1.0, result->_gradient, 1, this->_gradient, 1);
-
-
-    
-    const size_t cols = result->n_cols;
-    for (size_t col = 0; col < cols; ++col) {
-        double bias_grad = 0.0;
-        // Sum gradients across all rows for this column
-        for (size_t row = 0; row < result->n_rows; ++row) {
-            bias_grad += result->_gradient[row * cols + col];
-        }
-        other->_gradient[col] += bias_grad;
-    }
-};
+//  result->_backward = [this, other, result] () {
+//    cblas_daxpy(n, 1.0, result->_gradient, 1, this->_gradient, 1);
+//
+//
+//    
+//    const size_t cols = result->n_cols;
+//    for (size_t col = 0; col < cols; ++col) {
+//        double bias_grad = 0.0;
+//        // Sum gradients across all rows for this column
+//        for (size_t row = 0; row < result->n_rows; ++row) {
+//            bias_grad += result->_gradient[row * cols + col];
+//        }
+//        other->_gradient[col] += bias_grad;
+//    }
 
   return result;
 }
@@ -606,14 +629,14 @@ Matrix* Matrix::log() {
   result->op = "log";
   
   // Apply gradient elementwise
-  result->_backward = [this, result] () {
-    // this_grad = result_grad + this_grad;
-    cblas_daxpy(n, 1.0, result->_gradient, 1, this->_gradient, 1);
-
-    for (size_t i = 0; i < n; i++) {
-          this->_gradient[i] *= 1 / result->_data[i];
-    }
-  };
+//  result->_backward = [this, result] () {
+//    // this_grad = result_grad + this_grad;
+//    cblas_daxpy(n, 1.0, result->_gradient, 1, this->_gradient, 1);
+//
+//    for (size_t i = 0; i < n; i++) {
+//          this->_gradient[i] *= 1 / result->_data[i];
+//    }
+//  };
 
   return result;
 }
@@ -689,9 +712,9 @@ void Matrix::backward() {
   // Traverse the collected nodes in reverse
   for (std::vector<Matrix*>::iterator it_end = topo_vector.end() ; it_end != topo_vector.begin();){
     it_end--;
-    if ((*it_end)->_backward) {
-      (*it_end)->_backward();
-    }
+   // if ((*it_end)->_backward) {
+   //   (*it_end)->_backward();
+   // }
   }
 }
 

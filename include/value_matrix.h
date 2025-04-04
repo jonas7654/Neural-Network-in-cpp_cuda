@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <unordered_set>
 #include <string>
-#include <functional>
 #include <cblas.h> // OpenBLAS header
 #include <iostream>
 #include <vector>
@@ -27,7 +26,8 @@ private:
   
   std::string op;
   std::unordered_set<Matrix*> childs;
-  std::function<void()> _backward;
+  // Dont use std::function here
+  void* _backward(int backward_ID, Matrix* A, Matrix* other);
 
   void topological_sort(std::vector<Matrix*>& topo_vector);
   void collect_nodes(std::vector<Matrix*>& collected);
@@ -86,7 +86,8 @@ public:
   Matrix* slice(size_t row_start_idx, size_t row_end_idx, size_t col_start_idx, size_t col_end_idx);   
 
   // GPU allocation stuff
-  void transferToGPU();
+  void transferToDevice();
+  void transferToHost();
 };
 
 
