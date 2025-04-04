@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <random>
 #include <stack>
+#include <cuda.h>
+
 
 
 class Matrix {
@@ -34,6 +36,7 @@ private:
   bool isLearnable;
   bool isPersistent;
   bool visited;
+  bool isOnGPU;
 public:
   size_t n_rows;
   size_t n_cols;
@@ -81,6 +84,9 @@ public:
   Matrix* select_col(size_t col);
   void tranpose();
   Matrix* slice(size_t row_start_idx, size_t row_end_idx, size_t col_start_idx, size_t col_end_idx);   
+
+  // GPU allocation stuff
+  void transferToGPU();
 };
 
 

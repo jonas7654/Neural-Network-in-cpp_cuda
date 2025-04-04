@@ -1,37 +1,41 @@
 #include "../include/value_matrix.h"
-#include <algorithm>
-#include <cassert>
-#include <cblas.h> 
-#include <cmath>
+#include <cuda_device_runtime_api.h>
+#include <cuda_runtime_api.h>
+#include <driver_types.h>
 
 Matrix::Matrix(size_t rows, size_t cols, bool isLearnable) { 
+
+  // Initialize the matrix in main memory if it is not learnable
+  double* _array = new double[rows * cols];
+  double* _grad = new double[rows * cols];
+   // fill _gradient with zeros
+  cblas_dscal(this->n, 0.0, _gradient, 1);
+  
+  // Randomly initialize the matrix
+  if (isLearnable) {
+    rand();
+    // Transfer directly to GPU if this matrix isLearnable
+  }
+  else {
+    cblas_dscal(this->n, 0.0, _data, 1);
+    this->isOnGPU = false;
+  }
+
   this->n_rows = rows;
   this->n_cols = cols;
   this->isPersistent = false;
-  double* _array = new double[n_rows * n_cols];
-  double* _grad = new double[n_rows * n_cols];
   this->_data = _array;
   this->_gradient = _grad;
   this->n = n_rows * n_cols;
   this->op = "NONE";
   this->isLearnable = isLearnable;
   this->visited = false;
-
   std::unordered_set<Matrix*> childs;
   this->childs = childs;
 
-  // fill _gradient with zeros
-  cblas_dscal(this->n, 0.0, _gradient, 1);
-  
-  // Randomly initialize the matrix
-  if (isLearnable) {
-    rand();
-  }
-  else {
-    cblas_dscal(this->n, 0.0, _data, 1);
-  }
 
-};
+
+  };
 
 Matrix::Matrix(Matrix* other) {
   if(other == this) {
@@ -59,11 +63,69 @@ Matrix::Matrix(Matrix* other) {
   this->visited = other->visited;
 }
 
+void Matrix::transferToGPU() {
+  if (isOnGPU) {
+    return;
+  }
+  
+  size_t sizeofdata = sizeof(_data[0]);
+  size_t sizeofgradient = sizeof(_gradient[0]);
+  double* _data_cptr, * _gradient_cptr;
+  cudaError_t cudareturn;
+  
+  cudareturn = cudaMalloc((void**) & _data_cptr, n * sizeofdata);
+  if (cudareturn != cudaSuccess) {
+     std::cerr << "error allocating Matrix data on GPU" << cudaGetErrorString(cudareturn) << std::endl;
+     cudaFree(_data_cptr);
+     return;
+  }
 
-Matrix::~Matrix() {
+  cudareturn = cudaMalloc((void**) & _gradient_cptr, n * sizeofgradient);
+  if (cudareturn != cudaSuccess) {
+   std::cerr << "error allocating Matrix gradients on GPU" << cudaGetErrorString(cudareturn) << std::endl;
+    cudaFree(_gradient_cptr);
+    return;
+  }
+
+  cudareturn = cudaMemcpy(_data_cptr, _data, n * sizeofdata, cudaMemcpyHostToDevice);
+  if (cudareturn != cudaSuccess) {
+    std::cerr << "error allocating Matrix data on GPU" << cudaGetErrorString(cudareturn);
+    cudaFree(_data_cptr);
+    cudaFree(_gradient_cptr);
+    return;
+  }
+
+  cudaMemcpy(_gradient_cptr, _gradient, n * sizeofgradient, cudaMemcpyHostToDevice);
+  if (cudareturn != cudaSuccess) {
+    std::cerr << "error allocating Matrix gradients on GPU" << cudaGetErrorString(cudareturn);
+    cudaFree(_data_cptr);
+    cudaFree(_gradient_cptr);
+    return;
+  }
+  
+  // Free host memory
   delete[] _data;
   delete[] _gradient;
+  
+  // set the internal pointers to the device memory
+  _data = _data_cptr;
+  _gradient = _gradient_cptr;
+
+  // Set the GPU flag
+  isOnGPU = true;
 }
+
+
+Matrix::~Matrix() {
+  if (isOnGPU) {
+    cudaFree(_data);
+    cudaFree(_gradient);
+  }
+  else {
+    delete[] _data;
+    delete[] _gradient;
+  }
+ }
 
 double& Matrix::at(size_t i, size_t j) {
   assert(i < n_rows && j < n_cols);
